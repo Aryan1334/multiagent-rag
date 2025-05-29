@@ -1,10 +1,18 @@
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Form
+from pydantic import BaseModel
 import asyncpg
+from fastapi.templating import Jinja2Templates
+from fastapi.responses import HTMLResponse
 
 app = FastAPI()
+templates = Jinja2Templates(directory="templates")
 
-DATABASE_URL = "postgresql://postgres:aryan@localhost:5432/ragdb"
+DATABASE_URL = "postgresql://postgres:root@localhost:5432/ragdb"
 db_pool = None
+
+# Pydantic model for the request body
+class QuestionRequest(BaseModel):
+    question: str
 
 # DB connection management
 @app.on_event("startup")
@@ -48,11 +56,10 @@ def synthesize_answer(question: str, rows):
 
 # API endpoints
 @app.post("/ask")
-async def ask_question(request: Request):
-    body = await request.json()
-    question = body.get("question")
+async def ask_question(body: QuestionRequest):
+    question = body.question
 
-    if not question or not isinstance(question, str) or not question.strip():
+    if not question or not question.strip():
         raise HTTPException(status_code=400, detail="Invalid or empty question.")
 
     try:
@@ -79,3 +86,34 @@ async def test_db():
         return [dict(row) for row in rows]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"DB test failed: {str(e)}")
+
+# Single home GET endpoint
+@app.get("/", response_class=HTMLResponse)
+async def home(request: Request):
+    return templates.TemplateResponse("index.html", {"request": request})
+
+# Home POST to ask question from form
+@app.post("/", response_class=HTMLResponse)
+async def ask_via_form(request: Request, question: str = Form(...)):
+    if not question.strip():
+        return templates.TemplateResponse("index.html", {"request": request, "result": {"answer": "Invalid question."}})
+
+    try:
+        schema = get_relevant_schema(question)
+        sql_query = generate_sql(question, schema)
+        rows = await execute_query(sql_query)
+        answer = synthesize_answer(question, rows)
+
+        result = {
+            "answer": answer,
+            "sql_query": sql_query,
+            "result_rows": [dict(row) for row in rows]
+        }
+
+        return templates.TemplateResponse("index.html", {"request": request, "result": result})
+
+    except Exception as e:
+        return templates.TemplateResponse("index.html", {
+            "request": request,
+            "result": {"answer": f"Error: {str(e)}"}
+        })
